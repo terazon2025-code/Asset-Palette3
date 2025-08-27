@@ -263,13 +263,6 @@ const SummaryCard = ({ totalValue, totalGainLoss }) => {
 };
 
 const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewChange }) => {
-  const [isMobileView, setIsMobileView] = useState(window.innerWidth < 768);
-  useEffect(() => {
-    const handleResize = () => setIsMobileView(window.innerWidth < 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
       const data = payload[0];
@@ -284,68 +277,29 @@ const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewCha
     }
     return null;
   };
-  
   const renderCustomizedLabel = (props) => {
       const { cx, cy, midAngle, outerRadius, name, value, percent } = props;
-      if ((isMobileView && percent < 0.04) || percent < 0.01) return null;
-      
+      if (percent < 0.01) return null;
+      const isMobile = window.innerWidth < 640;
       const RADIAN = Math.PI / 180;
       const sin = Math.sin(-RADIAN * midAngle);
       const cos = Math.cos(-RADIAN * midAngle);
+      const radius = outerRadius + (isMobile ? 15 : 35);
+      const x = cx + radius * cos;
+      const y = cy + radius * sin;
+      const ex = x + (cos >= 0 ? 1 : -1) * (isMobile ? 12 : 22);
       const textAnchor = cos >= 0 ? 'start' : 'end';
-
-      const lineStartX = cx + (outerRadius + 5) * cos;
-      const lineStartY = cy + (outerRadius + 5) * sin;
-      const lineMidX = cx + (outerRadius + (isMobileView ? 15 : 25)) * cos;
-      const lineMidY = cy + (outerRadius + (isMobileView ? 15 : 25)) * sin;
-      const lineEndX = lineMidX + (cos >= 0 ? 1 : -1) * (isMobileView ? 10 : 20);
-
-      const textX = lineEndX + (cos >= 0 ? 1 : -1) * 8;
-
-      const maxNameLength = isMobileView ? 8 : 20;
-      const displayName = name.length > maxNameLength ? `${name.substring(0, maxNameLength - 1)}…` : name;
-
-      const formatCurrency = (num) => {
-        if (isMobileView && num >= 10000) {
-            const man = Math.round(num / 10000);
-            return `${new Intl.NumberFormat('ja-JP').format(man)}万`;
-        }
-        return new Intl.NumberFormat('ja-JP').format(num);
-      };
-      const formattedValue = `${formatCurrency(value)}円`;
-      const formattedPercent = `(${(percent * 100).toFixed(1)}%)`;
-
-      if (isMobileView) {
-          return (
-              <g>
-                  <path d={`M${lineStartX},${lineStartY}L${lineMidX},${lineMidY}L${lineEndX},${lineMidY}`} stroke="#9ca3af" fill="none" strokeWidth={0.75} />
-                  <text x={textX} y={lineMidY} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="middle" className="text-xs font-bold" dy={-10}>
-                      {displayName}
-                  </text>
-                  <text x={textX} y={lineMidY} textAnchor={textAnchor} fill="#374151" className="text-xs" dy={4}>
-                      {formattedValue}
-                  </text>
-                  <text x={textX} y={lineMidY} textAnchor={textAnchor} fill="#16a34a" className="text-xs font-semibold" dy={18}>
-                      {formattedPercent}
-                  </text>
-              </g>
-          );
-      } else {
-           return (
-              <g>
-                  <path d={`M${lineStartX},${lineStartY}L${lineMidX},${lineMidY}L${lineEndX},${lineMidY}`} stroke="#9ca3af" fill="none" />
-                  <text x={textX} y={lineMidY} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="middle" className="text-base font-bold">
-                      {displayName}
-                  </text>
-                  <text x={textX} y={lineMidY} dy={22} textAnchor={textAnchor} fill="#374151" className="text-sm">
-                      {formattedValue}
-                      <tspan dx="8" fill="#16a34a" className="font-semibold">{formattedPercent}</tspan>
-                  </text>
-              </g>
-          );
-      }
+      return (
+          <g>
+              <path d={`M${cx + (outerRadius+5) * cos},${cy + (outerRadius+5) * sin}L${x},${y}L${ex},${y}`} stroke="#9ca3af" fill="none" strokeWidth={1} />
+              <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="central" className="text-sm sm:text-2xl font-bold">{name}</text>
+              <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} dy={isMobile ? 18 : 30} textAnchor={textAnchor} fill="#374151" className="text-xs sm:text-xl">
+                  {`${new Intl.NumberFormat('ja-JP').format(value)}円 `}
+                  <tspan fill="#16a34a" className="font-semibold">{`(${(percent * 100).toFixed(1)}%)`}</tspan>
+              </text>
+          </g>
+      );
   };
-
   const data = view === 'assetClass' ? byAssetClass : view === 'account' ? byAccount : byHolding;
   const total = data.reduce((sum, entry) => sum + entry.value, 0);
   const chartData = data.map(item => ({ ...item, total }));
@@ -367,7 +321,7 @@ const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewCha
       </div>
       <div className="relative flex-grow w-full h-[28rem] sm:h-[42rem]">
         <ResponsiveContainer width="100%" height="100%">
-          <PieChart margin={{ top: 30, right: 30, bottom: 30, left: 30 }}>
+          <PieChart margin={{ top: 30, right: 20, bottom: 30, left: 20 }}>
             <Tooltip content={<CustomTooltip />} wrapperStyle={{ outline: 'none' }} offset={25} isAnimationActive={false} animationDuration={0} />
             <Pie data={chartData} cx="50%" cy="50%" innerRadius={'65%'} outerRadius={'80%'} fill="#8884d8" paddingAngle={3} dataKey="value" nameKey="name" labelLine={false} label={renderCustomizedLabel}>
               {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={getColor(entry)} />)}
