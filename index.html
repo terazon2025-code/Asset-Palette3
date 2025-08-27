@@ -37,7 +37,7 @@
     <div id="root"></div>
     <script type="text/babel" data-type="module">
 // --- ライブラリのインポート ---
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -102,661 +102,770 @@ const TrashIcon = ({ className }) => (
 );
 const EyeIcon = ({ className }) => (
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639l4.443-7.24a1.011 1.011 0 011.21-.472c.31.11.53.385.53.712v1.5a.75.75 0 00.75.75H12a.75.75 0 00.75-.75v-1.5c0-.327.22-.602.53-.712a1.011 1.011 0 011.21.472l4.443 7.24c.03.05.054.102.072.155a1.012 1.012 0 010 .639l-4.443 7.24a1.011 1.011 0 01-1.21.472c-.31-.11-.53-.385-.53-.712v-1.5a.75.75 0 00-.75-.75H12a.75.75 0 00-.75.75v1.5c0 .327-.22.602-.53.712a1.011 1.011 0 01-1.21-.472L2.036 12.322z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
   </svg>
 );
-const EyeSlashIcon = ({ className }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.243 4.243L6.228 6.228" />
-  </svg>
-);
 
-// --- ヘルパー関数 ---
-const useIsMobile = () => {
-    const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-    useEffect(() => {
-        const handleResize = () => setIsMobile(window.innerWidth < 768);
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
-    }, []);
-    return isMobile;
+// --- 共通ヘルパー関数 ---
+const aggregateHoldingsByName = (holdings) => {
+  const holdingGroups = new Map();
+  for (const holding of holdings) {
+      if (!holdingGroups.has(holding.name)) {
+          holdingGroups.set(holding.name, { totalValue: 0, totalGainLoss: 0, type: holding.type, subHoldings: [] });
+      }
+      const group = holdingGroups.get(holding.name);
+      group.totalValue += holding.value;
+      group.totalGainLoss += holding.gainLoss;
+      group.subHoldings.push(holding);
+  }
+  
+  const aggregatedResult = [];
+  for(const [name, group] of holdingGroups.entries()) {
+    const subHoldingsByAccount = new Map();
+    for (const subHolding of group.subHoldings) {
+      if (!subHoldingsByAccount.has(subHolding.account)) {
+        subHoldingsByAccount.set(subHolding.account, { value: 0, gainLoss: 0, originalHoldings: [] });
+      }
+      const accountGroup = subHoldingsByAccount.get(subHolding.account);
+      accountGroup.value += subHolding.value;
+      accountGroup.gainLoss += subHolding.gainLoss;
+      accountGroup.originalHoldings.push(subHolding);
+    }
+
+    const newSubHoldings = Array.from(subHoldingsByAccount.entries()).map(([account, data]) => {
+      if (data.originalHoldings.length === 1) {
+        return data.originalHoldings[0];
+      } else {
+        return {
+          id: `aggregated_${name}_${account}`, type: group.type, name: name, account: account,
+          value: data.value, gainLoss: data.gainLoss,
+        };
+      }
+    });
+
+    aggregatedResult.push({
+      name, type: group.type, totalValue: group.totalValue, totalGainLoss: group.totalGainLoss,
+      subHoldings: newSubHoldings.sort((a, b) => b.value - a.value),
+    });
+  }
+
+  return aggregatedResult.sort((a, b) => {
+    const typeOrderA = assetTypeOrder[a.type] || 90;
+    const typeOrderB = assetTypeOrder[b.type] || 90;
+    if (typeOrderA !== typeOrderB) {
+      return typeOrderA - typeOrderB;
+    }
+    return b.totalValue - a.totalValue;
+  });
 };
+
 
 // --- コンポーネント (components/*.tsx) ---
 
-const FileUpload = ({ onFileUpload }) => {
-  const [isDragActive, setIsDragActive] = useState(false);
-  const inputRef = useRef(null);
+const AddAssetModal = ({ isOpen, onClose, onSave, assetToEdit }) => {
+  const [name, setName] = useState('');
+  const [type, setType] = useState('');
+  const [value, setValue] = useState('');
+  const [gainLoss, setGainLoss] = useState('');
+  const [error, setError] = useState('');
+  const isEditMode = !!assetToEdit;
 
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setIsDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setIsDragActive(false);
+  useEffect(() => {
+    if (isOpen) {
+      if (isEditMode) {
+        setName(assetToEdit.name); setType(assetToEdit.type);
+        setValue(String(assetToEdit.value)); setGainLoss(String(assetToEdit.gainLoss));
+      } else {
+        setName(''); setType(''); setValue(''); setGainLoss('0');
+      }
+      setError('');
+    }
+  }, [isOpen, assetToEdit, isEditMode]);
+
+  if (!isOpen) return null;
+
+  const handleSave = () => {
+    if (!name || !type || !value) {
+      setError('銘柄名、種別、評価額は必須です。'); return;
+    }
+    const parsedValue = parseInt(value.replace(/,/g, ''), 10);
+    const parsedGainLoss = parseInt((gainLoss || '0').replace(/,/g, ''), 10);
+    if (isNaN(parsedValue) || isNaN(parsedGainLoss)) {
+      setError('評価額と評価損益は有効な数値を入力してください。'); return;
+    }
+    if (isEditMode) {
+        onSave({ ...assetToEdit, name, type, value: parsedValue, gainLoss: parsedGainLoss });
+    } else {
+        onSave({ name, type, value: parsedValue, gainLoss: parsedGainLoss });
     }
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      onFileUpload(e.dataTransfer.files);
-    }
-  };
-
-  const handleChange = (e) => {
-    e.preventDefault();
-    if (e.target.files && e.target.files[0]) {
-      onFileUpload(e.target.files);
-    }
-  };
-
-  const onButtonClick = () => {
-    inputRef.current.click();
-  };
-  
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6">
-      <div className="w-full max-w-2xl text-center">
-        <h1 className="text-3xl sm:text-5xl font-bold mb-2">Asset Palette</h1>
-        <p className="text-gray-600 mb-8 text-sm sm:text-base">あなたの資産ポートフォリオを、美しく、分かりやすく。</p>
-        <form id="form-file-upload" onDragEnter={handleDrag} onSubmit={(e) => e.preventDefault()} className="w-full">
-          <input ref={inputRef} type="file" id="input-file-upload" multiple={true} onChange={handleChange} className="hidden" accept=".csv" />
-          <label
-            htmlFor="input-file-upload"
-            className={`w-full h-64 flex flex-col items-center justify-center border-2 border-dashed rounded-xl cursor-pointer transition-colors ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-white hover:bg-gray-50'}`}
-          >
-            {isDragActive && (
-              <div onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop} className="absolute inset-0" />
-            )}
-            <UploadIcon className="w-12 h-12 text-gray-400 mb-4" />
-            <span className="font-semibold">ここにCSVファイルをドラッグ＆ドロップ</span>
-            <span className="text-gray-500 mt-2">または</span>
-            <button onClick={onButtonClick} className="mt-4 px-6 py-2 bg-blue-500 text-white rounded-md font-semibold hover:bg-blue-600 transition-colors">
-              ファイルを選択
-            </button>
-          </label>
-        </form>
-         <div className="mt-8 text-left text-gray-600 text-xs sm:text-sm bg-gray-100 p-4 rounded-lg">
-            <h3 className="font-bold mb-2">使い方</h3>
-            <ul className="list-disc list-inside space-y-1">
-                <li>楽天証券からダウンロードした「資産残高（CSV）」ファイルをインポートします。</li>
-                <li>複数のファイルを一度に選択、またはドラッグ＆ドロップできます。</li>
-                <li>CSVにない資産（現金など）はダッシュボードで手動追加できます。</li>
-                <li>データはすべてブラウザ内で処理され、外部には送信されません。</li>
-            </ul>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-4 sm:p-6" onClick={e => e.stopPropagation()}>
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6">{isEditMode ? '資産を編集' : '資産を手入力で追加'}</h2>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="asset-name" className="block text-sm sm:text-base font-medium text-gray-600 mb-1">銘柄名</label>
+            <input type="text" id="asset-name" value={name} onChange={e => setName(e.target.value)} placeholder="例：現金, ビットコイン" className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-base text-gray-900 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+          <div>
+            <label htmlFor="asset-type" className="block text-sm sm:text-base font-medium text-gray-600 mb-1">種別</label>
+            <input type="text" id="asset-type" value={type} onChange={e => setType(e.target.value)} placeholder="例：現金, 仮想通貨" className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-base text-gray-900 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+          <div>
+            <label htmlFor="asset-value" className="block text-sm sm:text-base font-medium text-gray-600 mb-1">評価額 (円)</label>
+            <input type="text" id="asset-value" value={value} onChange={e => setValue(e.target.value)} placeholder="1000000" className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-base text-gray-900 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+          <div>
+            <label htmlFor="asset-gainloss" className="block text-sm sm:text-base font-medium text-gray-600 mb-1">評価損益 (円)</label>
+            <input type="text" id="asset-gainloss" value={gainLoss} onChange={e => setGainLoss(e.target.value)} placeholder="0" className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-base text-gray-900 focus:ring-blue-500 focus:border-blue-500" />
+          </div>
+        </div>
+        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+        <div className="mt-6 flex justify-end space-x-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm sm:text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">キャンセル</button>
+          <button onClick={handleSave} className="px-4 py-2 text-sm sm:text-base font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors">保存</button>
         </div>
       </div>
     </div>
   );
 };
 
-const Header = ({ portfolioName, portfolios, setActivePortfolioIndex, onDownload, isMasked, setIsMasked }) => {
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setIsDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+const SummaryCard = ({ totalValue, totalGainLoss }) => {
+  const principal = totalValue - totalGainLoss;
+  const gainLossRate = principal === 0 ? 0 : (totalGainLoss / principal) * 100;
+  const formattedValueInteger = new Intl.NumberFormat('ja-JP', { style: 'decimal' }).format(totalValue).split('.')[0];
+  const formattedGainLoss = new Intl.NumberFormat('ja-JP', { style: 'decimal', signDisplay: 'always' }).format(totalGainLoss);
+  const formattedGainLossRate = `(${gainLossRate.toFixed(2)}%)`;
+  const gainLossColor = totalGainLoss >= 0 ? 'text-red-600' : 'text-blue-600';
 
   return (
-    <header className="flex items-center justify-between p-4 sm:p-6 bg-white/50 backdrop-blur-sm sticky top-0 z-10 border-b">
-      <button onClick={() => setActivePortfolioIndex(null)} className="flex items-center text-sm font-semibold text-gray-600 hover:text-gray-900">
-        <ArrowLeftIcon className="w-5 h-5 mr-2" />
-        戻る
-      </button>
-      <div className="relative" ref={dropdownRef}>
-        <button onClick={() => setIsDropdownOpen(!isDropdownOpen)} className="text-base sm:text-lg font-bold flex items-center">
-          {portfolioName}
-          <ChevronRightIcon className={`w-5 h-5 ml-1 transition-transform transform ${isDropdownOpen ? 'rotate-90' : ''}`} />
-        </button>
-        {isDropdownOpen && (
-          <div className="absolute mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-20 right-0">
-            {portfolios.map((p, index) => (
-              <a
-                key={index}
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  setActivePortfolioIndex(index);
-                  setIsDropdownOpen(false);
-                }}
-                className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-              >
-                {p.name}
-              </a>
-            ))}
-          </div>
-        )}
+    <div className="bg-white border border-gray-200 p-4 sm:p-6 rounded-lg shadow-sm">
+      <div className="flex items-center space-x-2">
+        <p className="text-lg sm:text-xl font-bold text-gray-800">資産合計</p>
+        <EyeIcon className="w-5 h-5 text-gray-400" />
       </div>
-      <div className="flex items-center space-x-1 sm:space-x-2">
-        <button onClick={() => setIsMasked(!isMasked)} className="p-2 rounded-full hover:bg-gray-200 transition-colors" aria-label={isMasked ? "金額を表示" : "金額を非表示"}>
-            {isMasked ? <EyeSlashIcon className="h-5 w-5 sm:h-6 sm:w-6" /> : <EyeIcon className="h-5 w-5 sm:h-6 sm:w-6" />}
-        </button>
-        <button onClick={onDownload} className="p-2 rounded-full hover:bg-gray-200 transition-colors" aria-label="画像をダウンロード">
-          <DownloadIcon className="h-5 w-5 sm:h-6 sm:w-6" />
-        </button>
+      <div className="mt-2 flex items-baseline justify-start">
+        <p className="text-4xl sm:text-6xl font-bold text-gray-900 tracking-tight">{formattedValueInteger}</p>
+        <span className="ml-1 text-xl sm:text-3xl font-medium text-gray-600">円</span>
       </div>
-    </header>
-  );
-};
-
-const SummaryCard = ({ summary, isMasked }) => {
-  const { totalValue, totalGain, gainPercentage } = summary;
-  const gainColor = totalGain >= 0 ? 'text-red-500' : 'text-blue-500';
-  const gainSign = totalGain >= 0 ? '+' : '';
-
-  return (
-    <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm">
-      <div className="text-3xl sm:text-5xl font-bold tracking-tight mb-1">
-        {isMasked ? '********' : Math.round(totalValue).toLocaleString()}
-        <span className="text-xl sm:text-3xl font-medium ml-2">円</span>
-      </div>
-      <div className="text-sm sm:text-base text-gray-500 mb-2">評価損益(率)</div>
-      <div className={`text-lg sm:text-2xl font-semibold ${gainColor}`}>
-        {gainSign}
-        {isMasked ? '********' : Math.round(totalGain).toLocaleString()}円
-        <span className="ml-2">({gainPercentage.toFixed(2)}%)</span>
+      <div className={`mt-2 text-lg sm:text-2xl font-semibold ${gainLossColor} flex flex-col sm:flex-row sm:items-center sm:space-x-2`}>
+        <p>評価損益(率)</p>
+        <div className="flex items-baseline space-x-2">
+            <span>{formattedGainLoss}円</span>
+            <span>{formattedGainLossRate}</span>
+        </div>
       </div>
     </div>
   );
 };
 
-const PortfolioPieChart = ({ data, isMasked }) => {
-  const [groupBy, setGroupBy] = useState('資産クラス');
-  const isMobile = useIsMobile();
-  
-  const processedData = useMemo(() => {
-    const grouped = data.reduce((acc, holding) => {
-      const key = holding[groupBy];
-      if (!acc[key]) {
-        acc[key] = { name: key, value: 0 };
-      }
-      acc[key].value += holding['評価額(円)'];
-      return acc;
-    }, {});
-    
-    const total = Object.values(grouped).reduce((sum, item) => sum + item.value, 0);
-
-    return Object.values(grouped)
-        .map(item => ({ ...item, percentage: item.value / total }))
-        .sort((a, b) => b.value - a.value);
-
-  }, [data, groupBy]);
-
-  const renderCustomizedLabel = useCallback(({ cx, cy, midAngle, innerRadius, outerRadius, percent, index, payload }) => {
-    if (isMobile && percent < 0.04) return null;
-
-    const RADIAN = Math.PI / 180;
-    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-    const labelRadius = outerRadius + (isMobile ? 15 : 25);
-    const x = cx + labelRadius * Math.cos(-midAngle * RADIAN);
-    const y = cy + labelRadius * Math.sin(-midAngle * RADIAN);
-    const textAnchorX = x > cx ? x + 5 : x - 5;
-    const textAnchorY = y;
-    const lineStartX = cx + (outerRadius + 5) * Math.cos(-midAngle * RADIAN);
-    const lineStartY = cy + (outerRadius + 5) * Math.sin(-midAngle * RADIAN);
-    const lineEndX = x > cx ? textAnchorX - 5 : textAnchorX + 5;
-    
-    let displayName = payload.name;
-    const maxNameLength = isMobile ? 6 : 10;
-    if (displayName.length > maxNameLength) {
-        displayName = displayName.substring(0, maxNameLength) + '...';
-    }
-
-    const formatValueCompact = (value) => {
-        if (isMasked) return '***';
-        if (value >= 100000000) return `${(value / 100000000).toFixed(1)}億`;
-        if (value >= 10000) return `${Math.round(value / 10000)}万`;
-        return Math.round(value);
-    };
-
-    return (
-        <g>
-            <path d={`M${lineStartX},${lineStartY} L${lineEndX},${y}`} stroke="#9ca3af" fill="none" strokeWidth={1}/>
-            <text x={textAnchorX} y={textAnchorY} fill="#374151" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" className="text-xs sm:text-sm">
-                <tspan x={textAnchorX} dy="-0.6em">{displayName}</tspan>
-                <tspan x={textAnchorX} dy="1.2em" className="font-semibold">{formatValueCompact(payload.value)}</tspan>
-                <tspan x={textAnchorX} dy="1.2em">({(percent * 100).toFixed(1)}%)</tspan>
-            </text>
-        </g>
-    );
-  }, [isMobile, isMasked]);
-
+const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewChange }) => {
   const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
-      const data = payload[0].payload;
+      const data = payload[0];
+      const formattedValue = new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(data.value);
       return (
-        <div className="bg-white/80 backdrop-blur-sm p-3 border border-gray-200 rounded-lg shadow-lg">
-          <p className="font-bold text-gray-800">{data.name}</p>
-          <p className="text-sm text-gray-600">
-            評価額: {isMasked ? '********' : Math.round(data.value).toLocaleString()}円
-          </p>
-          <p className="text-sm text-gray-600">
-            構成比: {(data.percentage * 100).toFixed(2)}%
-          </p>
+        <div className="bg-white/90 p-2 sm:p-3 rounded-md border border-gray-200 shadow-lg backdrop-blur-sm pointer-events-none">
+          <p className="font-bold text-sm sm:text-base text-gray-800">{`${data.name}`}</p>
+          <p className="text-gray-900 font-semibold text-sm sm:text-base">{`${formattedValue}`}</p>
+          <p className="text-xs text-gray-500">{`(${((data.value / payload[0].payload.total) * 100).toFixed(2)}%)`}</p>
         </div>
       );
     }
     return null;
   };
+  const renderCustomizedLabel = (props) => {
+    const { cx, cy, midAngle, outerRadius, name, value, percent } = props;
+    const isMobile = window.innerWidth < 640;
 
-  const tabs = ['資産クラス', '口座', '保有名柄'];
-  
+    // Hide small slices
+    if ((isMobile && percent < 0.04) || (!isMobile && percent < 0.01)) {
+        return null;
+    }
+
+    const RADIAN = Math.PI / 180;
+    const sin = Math.sin(-RADIAN * midAngle);
+    const cos = Math.cos(-RADIAN * midAngle);
+    const radius = outerRadius + (isMobile ? 15 : 35);
+    const x = cx + radius * cos;
+    const y = cy + radius * sin;
+    const ex = x + (cos >= 0 ? 1 : -1) * (isMobile ? 12 : 22);
+    const textAnchor = cos >= 0 ? 'start' : 'end';
+    
+    const formattedPercent = `(${(percent * 100).toFixed(1)}%)`;
+
+    if (isMobile) {
+        // Truncate long names on mobile
+        const displayName = (name.length > 8) ? `${name.substring(0, 7)}…` : name;
+        // Compact currency format helper for mobile
+        const formatCompactCurrency = (num) => {
+            if (num >= 100000000) return `${(num / 100000000).toFixed(1)}億円`;
+            if (num >= 10000) return `${Math.round(num / 10000)}万円`;
+            return `${new Intl.NumberFormat('ja-JP').format(num)}円`;
+        };
+        const formattedValue = formatCompactCurrency(value);
+        return (
+            <g>
+                <path d={`M${cx + (outerRadius+5) * cos},${cy + (outerRadius+5) * sin}L${x},${y}L${ex},${y}`} stroke="#9ca3af" fill="none" strokeWidth={1} />
+                <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="central" className="text-xs font-bold">{displayName}</text>
+                <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} dy={14} textAnchor={textAnchor} fill="#374151" className="text-xs">
+                    {formattedValue}
+                </text>
+                <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} dy={28} textAnchor={textAnchor} fill="#16a34a" className="text-xs font-semibold">
+                    {formattedPercent}
+                </text>
+            </g>
+        );
+    }
+    
+    // Desktop version
+    const formattedValue = `${new Intl.NumberFormat('ja-JP').format(value)}円`;
+    return (
+        <g>
+            <path d={`M${cx + (outerRadius+5) * cos},${cy + (outerRadius+5) * sin}L${x},${y}L${ex},${y}`} stroke="#9ca3af" fill="none" strokeWidth={1} />
+            <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="central" className="text-sm sm:text-2xl font-bold">{name}</text>
+            <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} dy={30} textAnchor={textAnchor} fill="#374151" className="text-xs sm:text-xl">
+                {`${formattedValue} `}
+                <tspan fill="#16a34a" className="font-semibold">{formattedPercent}</tspan>
+            </text>
+        </g>
+    );
+  };
+  const data = view === 'assetClass' ? byAssetClass : view === 'account' ? byAccount : byHolding;
+  const total = data.reduce((sum, entry) => sum + entry.value, 0);
+  const chartData = data.map(item => ({ ...item, total }));
+  const getColor = (entry) => {
+    if (view === 'assetClass') return getTypeColor(entry.name) || getGeneralColor(entry.name);
+    if (view === 'holding') return getTypeColor(entry.type) || getGeneralColor(entry.name);
+    return getGeneralColor(entry.name);
+  };
+
   return (
-    <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm">
-      <h2 className="text-xl sm:text-2xl font-bold mb-4">アセットアロケーション</h2>
-      <div className="mb-4">
-        <div className="inline-flex rounded-md shadow-sm bg-gray-100 p-1" role="group">
-          {tabs.map(tab => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setGroupBy(tab)}
-              className={`px-3 sm:px-4 py-1.5 text-sm font-medium transition-colors rounded-md ${groupBy === tab ? 'bg-white text-blue-600 shadow' : 'text-gray-600 hover:bg-gray-200'}`}
-            >
-              {tab}
-            </button>
-          ))}
+    <div className="bg-white border border-gray-200 p-2 sm:p-6 rounded-lg h-full flex flex-col shadow-sm">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4 px-2 sm:px-0">
+        <h2 className="text-xl sm:text-3xl font-bold text-gray-900">アセットアロケーション</h2>
+        <div className="flex text-sm bg-gray-200 p-1 rounded-lg self-stretch sm:self-auto">
+          <button onClick={() => onViewChange('assetClass')} className={`flex-1 px-2 py-1.5 rounded-md transition-colors text-sm sm:text-base font-bold text-center ${view === 'assetClass' ? 'bg-white text-gray-800 shadow' : 'text-gray-500 hover:text-gray-700'}`}>資産クラス別</button>
+          <button onClick={() => onViewChange('account')} className={`flex-1 px-2 py-1.5 rounded-md transition-colors text-sm sm:text-base font-bold text-center ${view === 'account' ? 'bg-white text-gray-800 shadow' : 'text-gray-500 hover:text-gray-700'}`}>口座別</button>
+          <button onClick={() => onViewChange('holding')} className={`flex-1 px-2 py-1.5 rounded-md transition-colors text-sm sm:text-base font-bold text-center ${view === 'holding' ? 'bg-white text-gray-800 shadow' : 'text-gray-500 hover:text-gray-700'}`}>保有名柄別</button>
         </div>
       </div>
-      <div style={{ width: '100%', height: isMobile ? 300 : 400 }}>
-          <ResponsiveContainer>
-              <PieChart margin={isMobile ? { top: 20, right: 60, bottom: 20, left: 60 } : { top: 20, right: 80, bottom: 20, left: 80 }}>
-                  <Pie
-                      data={processedData}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      outerRadius="80%"
-                      fill="#8884d8"
-                      dataKey="value"
-                      label={renderCustomizedLabel}
-                  >
-                      {processedData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={groupBy === '資産クラス' ? getTypeColor(entry.name) : getGeneralColor(entry.name)} />
-                      ))}
-                  </Pie>
-                  <Tooltip content={<CustomTooltip />} />
-              </PieChart>
-          </ResponsiveContainer>
+      <div className="relative flex-grow w-full h-[28rem] sm:h-[42rem]">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart margin={{ top: 30, right: 20, bottom: 30, left: 20 }}>
+            <Tooltip content={<CustomTooltip />} wrapperStyle={{ outline: 'none' }} offset={25} isAnimationActive={false} animationDuration={0} />
+            <Pie data={chartData} cx="50%" cy="50%" innerRadius={'65%'} outerRadius={'80%'} fill="#8884d8" paddingAngle={3} dataKey="value" nameKey="name" labelLine={false} label={renderCustomizedLabel}>
+              {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={getColor(entry)} />)}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );
 };
 
-const AddAssetModal = ({ isOpen, onClose, onSave, asset }) => {
-    if (!isOpen) return null;
-
-    const [formData, setFormData] = useState({
-        '資産クラス': asset ? asset['資産クラス'] : '現金',
-        '口座': asset ? asset['口座'] : 'その他',
-        '保有名柄': asset ? asset['保有名柄'] : '',
-        '評価額(円)': asset ? asset['評価額(円)'] : '',
-    });
-
-    const handleChange = (e) => {
-        const { name, value } = e.target;
-        setFormData(prev => ({ ...prev, [name]: name === '評価額(円)' ? (value ? parseFloat(value) : '') : value }));
-    };
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        const newAsset = {
-            ...formData,
-            '取得価格(円)': formData['評価額(円)'], // 取得価格と評価額を同一とする
-            'id': asset ? asset.id : Date.now()
-        };
-        onSave(newAsset);
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-                <h2 className="text-xl font-bold mb-4">{asset ? '資産を編集' : '資産を追加'}</h2>
-                <form onSubmit={handleSubmit}>
-                    <div className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">資産クラス</label>
-                            <select name="資産クラス" value={formData['資産クラス']} onChange={handleChange} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                                {Object.keys(assetTypeOrder).sort((a, b) => assetTypeOrder[a] - assetTypeOrder[b]).map(type => (
-                                    <option key={type} value={type}>{type}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">口座</label>
-                            <input type="text" name="口座" value={formData['口座']} onChange={handleChange} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">保有名柄</label>
-                            <input type="text" name="保有名柄" value={formData['保有名柄']} onChange={handleChange} required className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700">評価額(円)</label>
-                            <input type="number" name="評価額(円)" value={formData['評価額(円)']} onChange={handleChange} required className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" />
-                        </div>
-                    </div>
-                    <div className="mt-6 flex justify-end space-x-3">
-                        <button type="button" onClick={onClose} className="bg-white py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            キャンセル
-                        </button>
-                        <button type="submit" className="inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                            保存
-                        </button>
-                    </div>
-                </form>
+const HoldingsTable = ({ aggregatedHoldings, byAssetClass, byAccount, totalValue, view, onEdit, onDelete, isReadOnly }) => {
+  const [expandedGroups, setExpandedGroups] = useState(new Set());
+  const calculateGainLossRate = (value, gainLoss) => {
+      const principal = value - gainLoss;
+      if (principal === 0 || principal === -0) return gainLoss > 0 ? 100.0 : 0;
+      return (gainLoss / principal) * 100;
+  };
+  const currencyFormat = (value) => new Intl.NumberFormat('ja-JP').format(value);
+  const signedCurrencyFormat = (value) => new Intl.NumberFormat('ja-JP', { signDisplay: 'always' }).format(value);
+  const gainLossColor = (val) => val >= 0 ? 'text-red-600' : 'text-blue-600';
+  
+  const AggregatedHoldingCard = ({ aggHolding, totalValue, onEdit, onDelete, isReadOnly, isSubRow = false }) => {
+      const [isExpanded, setIsExpanded] = useState(false);
+      const gainLossRate = calculateGainLossRate(aggHolding.totalValue, aggHolding.totalGainLoss);
+      const percentageOfTotal = (aggHolding.totalValue / totalValue) * 100;
+      const hasSubHoldings = aggHolding.subHoldings.length > 1;
+      const isSingleManualEntry = aggHolding.subHoldings.length === 1 && aggHolding.subHoldings[0].account === '手入力';
+      const canEditSingle = !isReadOnly && isSingleManualEntry;
+      const typeColor = getTypeColor(aggHolding.type) || getGeneralColor(aggHolding.type);
+      return (
+          <div className={isSubRow ? "bg-gray-50 border border-gray-200 rounded-lg" : "bg-white border border-gray-200 rounded-lg"}>
+            <div className={`p-3 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 ${hasSubHoldings ? 'cursor-pointer hover:bg-gray-100' : ''}`} onClick={hasSubHoldings ? () => setIsExpanded(p => !p) : undefined}>
+              <div className="flex-1 min-w-0">
+                  <div className="flex items-center">
+                     <span className="w-3 h-3 sm:w-4 sm:h-4 rounded-full mr-2 sm:mr-3 flex-shrink-0" style={{ backgroundColor: typeColor }}></span>
+                     <p className="text-base sm:text-2xl text-gray-500 truncate">{aggHolding.type}</p>
+                  </div>
+                  <p className="text-xl sm:text-4xl font-bold text-gray-900 mt-1 truncate">{aggHolding.name}</p>
+              </div>
+              <div className="flex-shrink-0 flex flex-col items-start sm:items-end gap-1 sm:gap-2 mt-2 sm:mt-0 w-full sm:w-auto">
+                  <div className="text-right w-full">
+                      <p className="text-sm sm:text-xl text-gray-500">評価額 (構成比)</p>
+                      <div className="flex items-baseline justify-end">
+                        <p className="text-2xl sm:text-5xl font-bold text-gray-900">{currencyFormat(aggHolding.totalValue)}</p>
+                        <span className="text-lg sm:text-3xl font-medium text-gray-600 ml-1">円</span>
+                        <span className="text-base sm:text-2xl text-green-600 font-semibold ml-2 sm:ml-4 min-w-[70px] sm:min-w-[90px]">({percentageOfTotal.toFixed(1)}%)</span>
+                      </div>
+                  </div>
+                  <div className="text-right w-full">
+                      <p className="text-sm sm:text-xl text-gray-500">評価損益 (率)</p>
+                      <div className={`${gainLossColor(aggHolding.totalGainLoss)} text-base sm:text-2xl font-semibold flex items-center justify-end space-x-2 sm:space-x-3`}>
+                        <span>{signedCurrencyFormat(aggHolding.totalGainLoss)}円</span>
+                        <span>({gainLossRate.toFixed(2)}%)</span>
+                      </div>
+                  </div>
+              </div>
+              <div className="flex-shrink-0 sm:ml-4 flex items-center justify-end space-x-2 self-end sm:self-center">
+                  {canEditSingle && (<>
+                      <button onClick={(e) => { e.stopPropagation(); onEdit(aggHolding.subHoldings[0]); }} className="text-gray-400 hover:text-blue-600 p-1"><PencilIcon className="w-5 h-5 sm:w-6 sm:h-6" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); onDelete(aggHolding.subHoldings[0].id); }} className="text-gray-400 hover:text-red-600 p-1"><TrashIcon className="w-5 h-5 sm:w-6 sm:h-6" /></button>
+                  </>)}
+                  {hasSubHoldings && <ChevronRightIcon className={`w-6 h-6 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />}
+              </div>
             </div>
-        </div>
+            {isExpanded && hasSubHoldings && (
+              <div className="border-t border-gray-200 bg-gray-100 px-3 sm:px-6 py-4 sm:py-6 space-y-4">
+                {aggHolding.subHoldings.map((sub) => {
+                  const subGainLossRate = calculateGainLossRate(sub.value, sub.gainLoss);
+                  const canEditSub = !isReadOnly && sub.account === '手入力';
+                  return (
+                     <div key={sub.id} className="flex items-center justify-between">
+                       <p className="text-lg sm:text-2xl text-gray-700 font-medium">{sub.account}</p>
+                       <div className="flex items-center space-x-2 sm:space-x-4">
+                         <div className="text-right">
+                            <p className="text-xs sm:text-lg text-gray-500">評価額</p>
+                            <p className="text-base sm:text-3xl font-bold text-gray-800">{currencyFormat(sub.value)}円</p>
+                            <p className="text-xs sm:text-lg text-gray-500 mt-1">評価損益 (率)</p>
+                            <p className={`${gainLossColor(sub.gainLoss)} text-sm sm:text-2xl font-semibold`}>{signedCurrencyFormat(sub.gainLoss)} ({subGainLossRate.toFixed(2)}%)</p>
+                         </div>
+                         {canEditSub && (
+                           <div className="flex items-center space-x-1">
+                             <button onClick={() => onEdit(sub)} className="text-gray-400 hover:text-blue-600 p-1"><PencilIcon className="w-5 h-5 sm:w-6 sm:h-6" /></button>
+                             <button onClick={() => onDelete(sub.id)} className="text-gray-400 hover:text-red-600 p-1"><TrashIcon className="w-5 h-5 sm:w-6 sm:h-6" /></button>
+                           </div>
+                         )}
+                       </div>
+                     </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+      );
+  };
+  const toggleGroup = (name) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(name)) newSet.delete(name); else newSet.add(name);
+      return newSet;
+    });
+  };
+  const title = view === 'assetClass' ? '資産クラス別' : view === 'account' ? '口座別' : '保有商品';
+  
+  return (
+    <div className="bg-white border border-gray-200 p-3 sm:p-6 rounded-lg shadow-sm flex flex-col">
+      <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4 sm:mb-6 flex-shrink-0">{title}</h2>
+      <div className="space-y-3 sm:space-y-4">
+        {view === 'holding' && aggregatedHoldings.map((agg) => (
+          <AggregatedHoldingCard key={agg.name} aggHolding={agg} totalValue={totalValue} onEdit={onEdit} onDelete={onDelete} isReadOnly={isReadOnly} />
+        ))}
+        {view !== 'holding' && (view === 'assetClass' ? byAssetClass : byAccount).map(group => {
+            const isExpanded = expandedGroups.has(group.name);
+            const gainLossRate = calculateGainLossRate(group.value, group.gainLoss);
+            const percentageOfTotal = (group.value / totalValue) * 100;
+            const groupColor = view === 'assetClass' ? getTypeColor(group.name) || getGeneralColor(group.name) : getGeneralColor(group.name);
+            return (
+                <div key={group.name} className="bg-white border border-gray-200 rounded-lg">
+                    <div className={`p-3 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 ${group.aggregatedHoldings.length ? 'cursor-pointer hover:bg-gray-50' : ''}`} onClick={() => group.aggregatedHoldings.length && toggleGroup(group.name)}>
+                        <div className="flex-1 min-w-0">
+                            <div className="flex items-center">
+                                <span className="w-3 h-3 sm:w-4 sm:h-4 rounded-full mr-2 sm:mr-3 flex-shrink-0" style={{ backgroundColor: groupColor }}></span>
+                                <p className="text-xl sm:text-4xl font-bold text-gray-900 truncate">{group.name}</p>
+                            </div>
+                        </div>
+                        <div className="flex-shrink-0 flex flex-col items-start sm:items-end gap-1 sm:gap-2 mt-2 sm:mt-0 w-full sm:w-auto">
+                            <div className="text-right w-full">
+                                <p className="text-sm sm:text-xl text-gray-500">評価額 (構成比)</p>
+                                <div className="flex items-baseline justify-end">
+                                    <p className="text-2xl sm:text-5xl font-bold text-gray-900">{currencyFormat(group.value)}</p>
+                                    <span className="text-lg sm:text-3xl font-medium text-gray-600 ml-1">円</span>
+                                    <span className="text-base sm:text-2xl text-green-600 font-semibold ml-2 sm:ml-4 min-w-[70px] sm:min-w-[90px]">({percentageOfTotal.toFixed(1)}%)</span>
+                                </div>
+                            </div>
+                            <div className="text-right w-full">
+                                <p className="text-sm sm:text-xl text-gray-500">評価損益 (率)</p>
+                                <div className={`${gainLossColor(group.gainLoss)} text-base sm:text-2xl font-semibold flex items-center justify-end space-x-2 sm:space-x-3`}>
+                                    <span>{signedCurrencyFormat(group.gainLoss)}円</span>
+                                    <span>({gainLossRate.toFixed(2)}%)</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex-shrink-0 sm:ml-4 flex items-center justify-end self-end sm:self-center">
+                             {group.aggregatedHoldings.length > 0 && <ChevronRightIcon className={`w-6 h-6 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />}
+                        </div>
+                    </div>
+                    {isExpanded && group.aggregatedHoldings.length > 0 && (
+                        <div className="border-t border-gray-200 bg-gray-50/50 px-3 sm:px-6 py-4 space-y-3 sm:space-y-4">
+                            {group.aggregatedHoldings.map(agg => (
+                                <AggregatedHoldingCard key={agg.name} aggHolding={agg} totalValue={totalValue} onEdit={onEdit} onDelete={onDelete} isReadOnly={isReadOnly} isSubRow={true} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )
+        })}
+      </div>
+    </div>
+  );
+};
+
+const Header = ({ onReset, onExport, onAddAsset, isAddDisabled }) => {
+    return (
+        <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <h1 className="text-3xl sm:text-4xl font-bold text-gray-900">Asset Palette</h1>
+            <div className="flex items-center space-x-2 self-end sm:self-center">
+                <button onClick={onReset} className="flex items-center space-x-1 sm:space-x-2 px-3 py-2 text-sm sm:text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors shadow-sm">
+                    <ArrowLeftIcon className="w-5 h-5" /><span className="hidden sm:inline">戻る</span>
+                </button>
+                 <button onClick={onAddAsset} disabled={isAddDisabled} className="flex items-center space-x-1 sm:space-x-2 px-3 py-2 text-sm sm:text-base font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm">
+                    <PlusIcon className="w-5 h-5" /><span className="hidden sm:inline">追加</span>
+                </button>
+                <button onClick={onExport} className="flex items-center space-x-1 sm:space-x-2 px-3 py-2 text-sm sm:text-base font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors shadow-sm">
+                    <DownloadIcon className="w-5 h-5" /><span className="hidden sm:inline">保存</span>
+                </button>
+            </div>
+        </header>
     );
 };
 
-const HoldingsTable = ({ holdings, onUpdateHoldings, isMasked }) => {
-  const [editingAsset, setEditingAsset] = useState(null);
+const Dashboard = ({ individualPortfolios, combinedPortfolio, onReset, onManualAdd, onUpdateAsset, onDeleteAsset }) => {
+  const dashboardRef = useRef(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [sortConfig, setSortConfig] = useState({ key: '評価額(円)', direction: 'descending' });
+  const [editingAsset, setEditingAsset] = useState(null);
+  const [activePortfolioTab, setActivePortfolioTab] = useState('combined');
+  const [chartView, setChartView] = useState('assetClass');
 
-  const sortedHoldings = useMemo(() => {
-    let sortableItems = [...holdings];
-    if (sortConfig !== null) {
-      sortableItems.sort((a, b) => {
-        if (a[sortConfig.key] < b[sortConfig.key]) {
-          return sortConfig.direction === 'ascending' ? -1 : 1;
-        }
-        if (a[sortConfig.key] > b[sortConfig.key]) {
-          return sortConfig.direction === 'ascending' ? 1 : -1;
-        }
-        return 0;
-      });
-    }
-    return sortableItems;
-  }, [holdings, sortConfig]);
+  const handleExport = useCallback(() => {
+    if (!dashboardRef.current || !window.htmlToImage) return;
+    window.htmlToImage.toPng(dashboardRef.current, { backgroundColor: '#F9FAFB', pixelRatio: 2, style: { fontFamily: 'Inter, Noto Sans JP, sans-serif' } })
+      .then((dataUrl) => {
+        const link = document.createElement('a');
+        link.download = 'asset-palette.png';
+        link.href = dataUrl;
+        link.click();
+      }).catch((err) => { console.error('oops, something went wrong!', err); alert('画像の書き出しに失敗しました。'); });
+  }, []);
 
-  const requestSort = (key) => {
-    let direction = 'ascending';
-    if (sortConfig.key === key && sortConfig.direction === 'ascending') {
-      direction = 'descending';
-    }
-    setSortConfig({ key, direction });
-  };
-  
-  const handleAddClick = () => {
-    setEditingAsset(null);
-    setIsModalOpen(true);
-  };
+  const isCombinedView = activePortfolioTab === 'combined';
+  const currentData = isCombinedView ? combinedPortfolio : individualPortfolios[activePortfolioTab].data;
+  const currentPortfolioIndex = isCombinedView ? -1 : activePortfolioTab;
 
-  const handleEditClick = (asset) => {
-    setEditingAsset(asset);
-    setIsModalOpen(true);
+  const handleOpenAddModal = () => { if (isCombinedView) return; setEditingAsset(null); setIsModalOpen(true); };
+  const handleOpenEditModal = (asset) => { if (isCombinedView) return; setEditingAsset(asset); setIsModalOpen(true); };
+  const handleDelete = (assetId) => {
+    if (isCombinedView) return;
+    if (window.confirm('この資産を削除してもよろしいですか？')) onDeleteAsset(currentPortfolioIndex, assetId);
   };
-  
-  const handleDeleteClick = (assetId) => {
-    if(window.confirm('この資産を削除してもよろしいですか？')) {
-        const newHoldings = holdings.filter(h => h.id !== assetId);
-        onUpdateHoldings(newHoldings);
-    }
-  };
-
-  const handleSaveAsset = (asset) => {
-    const existingIndex = holdings.findIndex(h => h.id === asset.id);
-    let newHoldings;
-    if (existingIndex > -1) {
-        newHoldings = [...holdings];
-        newHoldings[existingIndex] = asset;
-    } else {
-        newHoldings = [...holdings, asset];
-    }
-    onUpdateHoldings(newHoldings);
+  const handleSaveAsset = (assetData) => {
+    if (isCombinedView) return;
+    if ('id' in assetData) onUpdateAsset(currentPortfolioIndex, assetData); else onManualAdd(currentPortfolioIndex, assetData);
     setIsModalOpen(false);
-  };
-
-  const totals = useMemo(() => {
-    const evaluation = holdings.reduce((sum, h) => sum + (h['評価額(円)'] || 0), 0);
-    const acquisition = holdings.reduce((sum, h) => sum + (h['取得価格(円)'] || 0), 0);
-    const gainLoss = evaluation - acquisition;
-    const gainLossPercentage = acquisition === 0 ? 0 : (gainLoss / acquisition) * 100;
-    return { evaluation, acquisition, gainLoss, gainLossPercentage };
-  }, [holdings]);
-
-  const headers = [
-    { key: '資産クラス', label: '資産クラス' },
-    { key: '口座', label: '口座' },
-    { key: '保有名柄', label: '保有名柄' },
-    { key: '評価額(円)', label: '評価額' },
-    { key: '評価損益(円)', label: '評価損益' },
-  ];
+  }
+  const getTabClass = (isActive) => `px-3 md:px-4 py-2 sm:py-3 text-base sm:text-xl font-bold whitespace-nowrap transition-colors relative ${isActive ? 'text-gray-900' : 'text-gray-400 hover:text-gray-600'}`;
 
   return (
-    <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm">
-        <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl sm:text-2xl font-bold">保有資産一覧</h2>
-            <button onClick={handleAddClick} className="flex items-center bg-blue-500 text-white px-3 py-2 rounded-md hover:bg-blue-600 text-sm font-semibold">
-                <PlusIcon className="w-5 h-5 mr-1" />
-                追加
-            </button>
+    <>
+      <div className="p-2 md:p-6 lg:p-8 bg-gray-50 min-h-screen">
+        <div className="max-w-7xl mx-auto">
+          <Header onReset={onReset} onExport={handleExport} onAddAsset={handleOpenAddModal} isAddDisabled={isCombinedView} />
+          <nav className="mt-4 sm:mt-6 border-b border-gray-200">
+             <div className="flex space-x-2 md:space-x-8 -mb-px overflow-x-auto">
+                <button className={getTabClass(isCombinedView)} onClick={() => setActivePortfolioTab('combined')}>合算{isCombinedView && <span className="absolute bottom-0 left-0 w-full h-0.5 sm:h-1 bg-blue-600 rounded-t-full"></span>}</button>
+                {individualPortfolios.map((p, index) => (
+                  <button key={p.name} className={getTabClass(activePortfolioTab === index)} onClick={() => setActivePortfolioTab(index)}>{p.name}{activePortfolioTab === index && <span className="absolute bottom-0 left-0 w-full h-0.5 sm:h-1 bg-blue-600 rounded-t-full"></span>}</button>
+                ))}
+            </div>
+          </nav>
+          <main ref={dashboardRef} className="pt-4 md:pt-8">
+            <SummaryCard totalValue={currentData.totalValue} totalGainLoss={currentData.totalGainLoss} />
+            <div className="flex flex-col gap-4 md:gap-8 mt-4 md:mt-8">
+                <PortfolioPieChart byAccount={currentData.byAccount} byAssetClass={currentData.byAssetClass} byHolding={currentData.byHoldingForPie} view={chartView} onViewChange={setChartView} />
+                <HoldingsTable aggregatedHoldings={currentData.aggregatedHoldings} byAccount={currentData.byAccount} byAssetClass={currentData.byAssetClass} totalValue={currentData.totalValue} view={chartView} onEdit={handleOpenEditModal} onDelete={handleDelete} isReadOnly={isCombinedView} />
+            </div>
+          </main>
         </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-gray-500">
-              {headers.map(({ key, label }) => (
-                <th key={key} className="p-3 font-semibold cursor-pointer" onClick={() => requestSort(key)}>
-                  {label}
-                  {sortConfig.key === key ? (sortConfig.direction === 'ascending' ? ' ▲' : ' ▼') : ''}
-                </th>
-              ))}
-              <th className="p-3 font-semibold text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedHoldings.map((holding, index) => {
-                const gainLoss = (holding['評価額(円)'] || 0) - (holding['取得価格(円)'] || 0);
-                const gainLossPercentage = holding['取得価格(円)'] ? (gainLoss / holding['取得価格(円)']) * 100 : 0;
-                const gainColor = gainLoss >= 0 ? 'text-red-500' : 'text-blue-500';
-                return (
-                    <tr key={holding.id || index} className="border-b">
-                        <td className="p-3">{holding['資産クラス']}</td>
-                        <td className="p-3">{holding['口座']}</td>
-                        <td className="p-3 font-medium">{holding['保有名柄']}</td>
-                        <td className="p-3 text-right">{isMasked ? '********' : Math.round(holding['評価額(円)']).toLocaleString()}</td>
-                        <td className={`p-3 text-right whitespace-nowrap ${gainColor}`}>
-                            {gainLoss >= 0 ? '+' : ''}
-                            {isMasked ? '********' : Math.round(gainLoss).toLocaleString()}
-                            &nbsp;({(gainLossPercentage).toFixed(2)}%)
-                        </td>
-                        <td className="p-3 text-right">
-                           <button onClick={() => handleEditClick(holding)} className="p-1 text-gray-500 hover:text-blue-600"><PencilIcon className="w-4 h-4"/></button>
-                           <button onClick={() => handleDeleteClick(holding.id)} className="p-1 text-gray-500 hover:text-red-600"><TrashIcon className="w-4 h-4"/></button>
-                        </td>
-                    </tr>
-                )
-            })}
-          </tbody>
-           <tfoot>
-            <tr className="border-t-2 font-bold">
-                <td colSpan="3" className="p-3">合計</td>
-                <td className="p-3 text-right">
-                    {isMasked ? '********' : Math.round(totals.evaluation).toLocaleString()}
-                </td>
-                <td className="p-3 text-right whitespace-nowrap">
-                    <span className={totals.gainLoss >= 0 ? 'text-red-500' : 'text-blue-500'}>
-                        {totals.gainLoss >= 0 ? '+' : ''}
-                        {isMasked ? '********' : Math.round(totals.gainLoss).toLocaleString()}
-                        &nbsp;({(totals.gainLossPercentage).toFixed(2)}%)
-                    </span>
-                </td>
-                <td></td>
-            </tr>
-           </tfoot>
-        </table>
+        <footer className="text-center py-8 text-gray-400 text-sm"><p>Generated by Asset Palette</p></footer>
       </div>
-      <AddAssetModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAsset} asset={editingAsset}/>
-    </div>
+      <AddAssetModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSave={handleSaveAsset} assetToEdit={editingAsset} />
+    </>
   );
 };
 
-const Dashboard = ({ portfolio, portfolios, setActivePortfolioIndex, updatePortfolio, isMasked, setIsMasked }) => {
-  const dashboardRef = useRef(null);
+const FileUpload = ({ onDataLoaded }) => {
+  const [files, setFiles] = useState([]);
+  const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef(null);
+  const nextId = useRef(0);
 
-  const summary = useMemo(() => {
-    const totalValue = portfolio.holdings.reduce((sum, h) => sum + h['評価額(円)'], 0);
-    const totalAcquisition = portfolio.holdings.reduce((sum, h) => sum + h['取得価格(円)'], 0);
-    const totalGain = totalValue - totalAcquisition;
-    const gainPercentage = totalAcquisition > 0 ? (totalGain / totalAcquisition) * 100 : 0;
-    return { totalValue, totalGain, gainPercentage };
-  }, [portfolio.holdings]);
-
-  const handleDownloadImage = useCallback(() => {
-    if (dashboardRef.current === null) {
-      return;
+  const calculatePortfolioData = (holdings) => {
+    const totalValue = holdings.reduce((sum, h) => sum + h.value, 0);
+    const totalGainLoss = holdings.reduce((sum, h) => sum + h.gainLoss, 0);
+    const aggregatedHoldings = aggregateHoldingsByName(holdings);
+    const assetClassGroups = new Map();
+    holdings.forEach(h => {
+      if (!assetClassGroups.has(h.type)) assetClassGroups.set(h.type, []);
+      assetClassGroups.get(h.type).push(h);
+    });
+    const byAssetClass = Array.from(assetClassGroups.entries()).map(([name, holdingsInGroup]) => ({
+      name, value: holdingsInGroup.reduce((sum, h) => sum + h.value, 0), gainLoss: holdingsInGroup.reduce((sum, h) => sum + h.gainLoss, 0),
+      aggregatedHoldings: aggregateHoldingsByName(holdingsInGroup)
+    })).sort((a,b) => b.value - a.value);
+    const accountGroups = new Map();
+    holdings.forEach(h => {
+      const key = h.account === '手入力' ? h.type : h.account;
+      if (!accountGroups.has(key)) accountGroups.set(key, []);
+      accountGroups.get(key).push(h);
+    });
+    const byAccount = Array.from(accountGroups.entries()).map(([name, holdingsInGroup]) => ({
+      name, value: holdingsInGroup.reduce((sum, h) => sum + h.value, 0), gainLoss: holdingsInGroup.reduce((sum, h) => sum + h.gainLoss, 0),
+      aggregatedHoldings: aggregateHoldingsByName(holdingsInGroup)
+    })).sort((a,b) => b.value - a.value);
+    const byHoldingForPie = aggregatedHoldings.map(h => ({ name: h.name, value: h.totalValue, type: h.type })).sort((a,b) => b.value - a.value);
+    return { totalValue, totalGainLoss, aggregatedHoldings, byAccount, byAssetClass, byHoldingForPie, holdings };
+  };
+  const parseSingleFile = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const buffer = event.target?.result;
+          if (!buffer) throw new Error("ファイルの読み込みに失敗しました。");
+          let text = null;
+          for (const decoderInfo of [{ encoding: 'utf-8' }, { encoding: 'shift_jis' }, { encoding: 'euc-jp' }]) {
+              try {
+                  const decodedText = new TextDecoder(decoderInfo.encoding).decode(buffer);
+                  if (decodedText.includes('保有商品詳細')) { text = decodedText; break; }
+              } catch (e) { /* ignore */ }
+          }
+          if (!text) throw new Error('「保有商品詳細」セクションが見つかりません。楽天証券からダウンロードした資産残高（CSV）ファイルであることを確認してください。');
+          if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+          const lines = text.split(/\r\n|\n/).filter(line => line.trim() !== '');
+          const startIndex = lines.findIndex(line => line.includes('保有商品詳細'));
+          if (startIndex === -1) throw new Error('CSV解析中に「保有商品詳細」セクションが見失われました。');
+          
+          const parseCsvLine = (line) => {
+              const result = []; let field = ''; let inQuotes = false; let i = 0;
+              while (i < line.length) {
+                  const char = line[i];
+                  if (inQuotes) {
+                      if (char === '"') { if (i + 1 < line.length && line[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; } } else { field += char; }
+                  } else {
+                      if (char === '"') { inQuotes = true; } else if (char === ',') { result.push(field); field = ''; } else { field += char; }
+                  } i++;
+              } result.push(field); return result;
+          };
+          const headers = parseCsvLine(lines[startIndex + 1]).map(h => h.trim());
+          const findHeaderIndex = (headers, names) => { for (const name of names) { const i = headers.indexOf(name); if (i !== -1) return i; } return -1; };
+          const typeIndex = findHeaderIndex(headers, ['種別']);
+          const nameIndex = findHeaderIndex(headers, ['銘柄名', '銘柄']);
+          const accountIndex = findHeaderIndex(headers, ['口座']);
+          const valueIndex = findHeaderIndex(headers, ['評価額', '時価評価額[円]']);
+          const gainLossIndex = findHeaderIndex(headers, ['評価損益[円]']);
+          const missing = [{ n: ['種別'], i: typeIndex }, { n: ['銘柄名', '銘柄'], i: nameIndex }, { n: ['口座'], i: accountIndex }, { n: ['評価額', '時価評価額[円]'], i: valueIndex }, { n: ['評価損益[円]'], i: gainLossIndex }].filter(h => h.i === -1).map(h => h.n.join('/'));
+          if (missing.length > 0) throw new Error(`必須の列が見つかりません: ${missing.join(', ')}。`);
+          
+          const holdings = [];
+          for (let i = startIndex + 2; i < lines.length; i++) {
+              if (lines[i].startsWith('■')) continue;
+              const columns = parseCsvLine(lines[i]).map(c => c.trim());
+              if (columns.length < Math.max(typeIndex, nameIndex, accountIndex, valueIndex, gainLossIndex) + 1) continue;
+              const value = parseInt((columns[valueIndex] || '0').replace(/,/g, ''), 10);
+              const gainLoss = parseInt((columns[gainLossIndex] || '0').replace(/,/g, ''), 10);
+              if (!isNaN(value) && !isNaN(gainLoss) && columns[typeIndex] && columns[nameIndex] && columns[accountIndex]) {
+                  holdings.push({ id: `csv_${file.name}_${i}`, type: columns[typeIndex], name: columns[nameIndex], account: columns[accountIndex], value, gainLoss });
+              }
+          }
+          resolve(holdings);
+        } catch (e) { reject(e); }
+      };
+      reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました。'));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+  const addFiles = useCallback((newFiles) => {
+    setError(null);
+    const csvFiles = Array.from(newFiles).filter(f => f.name.toLowerCase().endsWith('.csv'));
+    if (csvFiles.length === 0) { setError('有効なCSVファイルがありません。'); return; }
+    const newFileEntries = csvFiles.map((file, index) => ({ id: nextId.current++, file, name: `ポートフォリオ ${files.length + index + 1}` }));
+    setFiles(prev => [...prev, ...newFileEntries]);
+  }, [files.length]);
+  const handleFileChange = (e) => { if (e.target.files) { addFiles(e.target.files); e.target.value = ''; } };
+  const handleDrop = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); if (e.dataTransfer.files) addFiles(e.dataTransfer.files); };
+  const handleDragEnter = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
+  const handleDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); };
+  const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); };
+  const handleNameChange = (id, newName) => { setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f)); };
+  const handleRemoveFile = (id) => { setFiles(prev => prev.filter(f => f.id !== id)); };
+  const processAllFiles = async () => {
+    if (files.length === 0) { setError('CSVファイルを追加してください。'); return; }
+    setIsLoading(true); setError(null);
+    const results = [];
+    for (const fileWithData of files) {
+      try {
+        const holdings = await parseSingleFile(fileWithData.file);
+        if (holdings.length === 0) throw new Error(`'${fileWithData.file.name}' から保有商品データを読み込めませんでした。`);
+        results.push({ name: fileWithData.name, data: calculatePortfolioData(holdings) });
+      } catch (e) {
+        setError(`エラー (${fileWithData.file.name}): ${e.message}`); setIsLoading(false); return;
+      }
     }
-    htmlToImage.toPng(dashboardRef.current, { 
-        quality: 0.95, 
-        backgroundColor: '#f9fafb'
-    })
-      .then((dataUrl) => {
-        const link = document.createElement('a');
-        link.download = `${portfolio.name}-portfolio.png`;
-        link.href = dataUrl;
-        link.click();
-      })
-      .catch((err) => {
-        console.log(err);
-      });
-  }, [dashboardRef, portfolio.name]);
-  
-  const handleUpdateHoldings = (newHoldings) => {
-      updatePortfolio({ ...portfolio, holdings: newHoldings });
+    onDataLoaded(results);
   };
 
   return (
-    <div className="bg-gray-50">
-        <div ref={dashboardRef}>
-            <Header
-                portfolioName={portfolio.name}
-                portfolios={portfolios}
-                setActivePortfolioIndex={setActivePortfolioIndex}
-                onDownload={handleDownloadImage}
-                isMasked={isMasked}
-                setIsMasked={setIsMasked}
-            />
-            <main className="p-4 sm:p-6 space-y-4 sm:space-y-6">
-                <SummaryCard summary={summary} isMasked={isMasked} />
-                <PortfolioPieChart data={portfolio.holdings} isMasked={isMasked} />
-                <HoldingsTable holdings={portfolio.holdings} onUpdateHoldings={handleUpdateHoldings} isMasked={isMasked} />
-            </main>
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gray-100">
+      <div className="text-center max-w-2xl mx-auto">
+        <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-gray-900">Asset Palette</h1>
+        <p className="mt-4 text-lg sm:text-xl md:text-2xl text-gray-600">CSVを放り込むだけ。あなたの資産を、一枚の絵画に。</p>
+      </div>
+      <div className="w-full max-w-2xl mt-12">
+        <div className="bg-white border border-gray-200 rounded-lg p-4 sm:p-6 shadow-sm">
+          <div onDrop={handleDrop} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave} onDragOver={handleDragOver} className={`flex justify-center items-center w-full min-h-[12rem] px-4 transition border-2 border-dashed rounded-md cursor-pointer hover:border-blue-500 focus:outline-none ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300'}`} onClick={() => fileInputRef.current?.click()}>
+            <input type="file" accept=".csv" onChange={handleFileChange} className="hidden" ref={fileInputRef} multiple />
+            <span className="flex flex-col items-center space-y-2 text-center">
+              <UploadIcon className="w-10 h-10 sm:w-12 sm:h-12 text-gray-400" />
+              <span className="text-base sm:text-lg font-medium text-gray-700">
+                <span className="text-blue-600 font-semibold">CSVファイル</span>をドラッグ＆ドロップ
+              </span>
+              <span className="text-sm sm:text-base text-gray-500">またはクリックして選択 (複数可)</span>
+            </span>
+          </div>
+          {files.length > 0 && (
+            <div className="mt-6 space-y-3">
+              {files.map(f => (
+                <div key={f.id} className="flex items-center space-x-2 sm:space-x-3 bg-gray-100 p-2 rounded-md border border-gray-200">
+                  <input type="text" value={f.name} onChange={(e) => handleNameChange(f.id, e.target.value)} className="flex-grow bg-transparent text-gray-900 focus:outline-none focus:ring-0 border-none p-2 text-sm sm:text-base" placeholder="ポートフォリオ名 (例: 夫, 妻)" />
+                  <span className="text-sm sm:text-base text-gray-500 truncate flex-shrink-0" style={{maxWidth: '120px'}}>{f.file.name}</span>
+                  <button onClick={() => handleRemoveFile(f.id)} className="text-gray-400 hover:text-red-500"><TrashIcon className="w-5 h-5"/></button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+        <div className="mt-6 flex flex-col items-center">
+            <button onClick={processAllFiles} disabled={isLoading || files.length === 0} className="w-full max-w-sm px-8 py-3 sm:py-4 text-base sm:text-lg font-bold text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center shadow-sm">
+              {isLoading ? (<><div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div><span>解析中...</span></>) : 'ポートフォリオを作成'}
+            </button>
+            {error && <p className="mt-4 text-red-700 bg-red-100 border border-red-200 px-4 py-2 rounded-md w-full text-center text-sm">{error}</p>}
+        </div>
+      </div>
     </div>
   );
 };
 
 
 // --- メインアプリケーション (App.tsx) ---
-function App() {
-  const [portfolios, setPortfolios] = useState([]);
-  const [activePortfolioIndex, setActivePortfolioIndex] = useState(null);
-  const [isMasked, setIsMasked] = useState(false);
-
-  const processCSV = (fileContent) => {
-    const lines = fileContent.split(/\r\n|\n/).filter(line => line.trim() !== '');
-    if (lines.length < 2) return [];
-
-    const headers = lines[1].split(',').map(h => h.trim().replace(/"/g, ''));
-    
-    return lines.slice(2).map((line, idx) => {
-      const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
-      const holding = headers.reduce((obj, header, index) => {
-        const value = values[index];
-        if (header.includes('(円)')) {
-          obj[header] = parseFloat(value) || 0;
-        } else {
-          obj[header] = value;
-        }
-        return obj;
-      }, {});
-      holding.id = `${fileContent.slice(0, 10)}_${idx}`; // ファイル内容と行番号から簡易ID
-      return holding;
-    }).filter(h => h['保有名柄'] && h['保有名柄'] !== '---');
-  };
+const App = () => {
+  const [appState, setAppState] = useState(null);
   
-  const handleFileUpload = (files) => {
-    const filePromises = Array.from(files).map(file => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const holdings = processCSV(e.target.result);
-            resolve({
-                name: file.name.replace('.csv', ''),
-                holdings: holdings,
-            });
-        };
-        reader.onerror = reject;
-        reader.readAsText(file, 'sjis');
-      });
+  const recalculatePortfolio = (allHoldings) => {
+    const totalValue = allHoldings.reduce((sum, h) => sum + h.value, 0);
+    const totalGainLoss = allHoldings.reduce((sum, h) => sum + h.gainLoss, 0);
+    const aggregatedHoldings = aggregateHoldingsByName(allHoldings);
+    const assetClassGroups = new Map();
+    allHoldings.forEach(h => {
+      if (!assetClassGroups.has(h.type)) assetClassGroups.set(h.type, []);
+      assetClassGroups.get(h.type).push(h);
     });
-
-    Promise.all(filePromises).then(newPortfolios => {
-      const allHoldings = newPortfolios.flatMap(p => p.holdings);
-      const combinedPortfolio = {
-        name: 'すべての資産',
-        holdings: allHoldings,
-      };
-      
-      setPortfolios([combinedPortfolio, ...newPortfolios]);
-      setActivePortfolioIndex(0);
+    const byAssetClass = Array.from(assetClassGroups.entries()).map(([name, holdings]) => ({
+      name, value: holdings.reduce((sum, h) => sum + h.value, 0), gainLoss: holdings.reduce((sum, h) => sum + h.gainLoss, 0),
+      aggregatedHoldings: aggregateHoldingsByName(holdings)
+    })).sort((a,b) => b.value - a.value);
+    const accountGroups = new Map();
+    allHoldings.forEach(h => {
+      const key = h.account === '手入力' ? h.type : h.account;
+      if (!accountGroups.has(key)) accountGroups.set(key, []);
+      accountGroups.get(key).push(h);
     });
-  };
-  
-  const updatePortfolio = (updatedPortfolio) => {
-      const index = portfolios.findIndex(p => p.name === updatedPortfolio.name);
-      if (index !== -1) {
-          const newPortfolios = [...portfolios];
-          newPortfolios[index] = updatedPortfolio;
-
-          // 'すべての資産'も更新
-          if (index !== 0) {
-            const allHoldings = newPortfolios.slice(1).flatMap(p => p.holdings);
-            newPortfolios[0] = { ...newPortfolios[0], holdings: allHoldings };
-          }
-          
-          setPortfolios(newPortfolios);
-      }
+    const byAccount = Array.from(accountGroups.entries()).map(([name, holdings]) => ({
+      name, value: holdings.reduce((sum, h) => sum + h.value, 0), gainLoss: holdings.reduce((sum, h) => sum + h.gainLoss, 0),
+      aggregatedHoldings: aggregateHoldingsByName(holdings)
+    })).sort((a,b) => b.value - a.value);
+    const byHoldingForPie = aggregatedHoldings.map(h => ({ name: h.name, value: h.totalValue, type: h.type })).sort((a, b) => b.value - a.value);
+    return { totalValue, totalGainLoss, aggregatedHoldings, byAccount, byAssetClass, byHoldingForPie, holdings: allHoldings };
   };
 
-  const activePortfolio = activePortfolioIndex !== null ? portfolios[activePortfolioIndex] : null;
+  const handleDataLoaded = useCallback((portfolios) => {
+    const allHoldings = portfolios.flatMap(p => p.data.holdings);
+    const combinedData = recalculatePortfolio(allHoldings);
+    setAppState({ individual: portfolios, combined: combinedData });
+  }, []);
+
+  const handleReset = useCallback(() => setAppState(null), []);
+  const handleStateUpdate = useCallback((updateFn) => {
+    setAppState(prevState => {
+      if (!prevState) return null;
+      const updatedIndividual = updateFn(prevState.individual);
+      const allHoldings = updatedIndividual.flatMap(p => p.data.holdings);
+      const combinedData = recalculatePortfolio(allHoldings);
+      return { individual: updatedIndividual, combined: combinedData };
+    });
+  }, []);
+  const handleManualAdd = useCallback((portfolioIndex, newAssetData) => {
+    handleStateUpdate(individual => {
+      const newAsset = { ...newAssetData, id: `manual_${Date.now()}`, account: '手入力' };
+      const updated = [...individual];
+      const target = updated[portfolioIndex];
+      const updatedHoldings = [...target.data.holdings, newAsset];
+      updated[portfolioIndex] = { ...target, data: recalculatePortfolio(updatedHoldings) };
+      return updated;
+    });
+  }, [handleStateUpdate]);
+  const handleUpdateAsset = useCallback((portfolioIndex, updatedAsset) => {
+    handleStateUpdate(individual => {
+      const updated = [...individual];
+      const target = updated[portfolioIndex];
+      const updatedHoldings = target.data.holdings.map(h => h.id === updatedAsset.id ? updatedAsset : h);
+      updated[portfolioIndex] = { ...target, data: recalculatePortfolio(updatedHoldings) };
+      return updated;
+    });
+  }, [handleStateUpdate]);
+  const handleDeleteAsset = useCallback((portfolioIndex, assetId) => {
+    handleStateUpdate(individual => {
+      const updated = [...individual];
+      const target = updated[portfolioIndex];
+      const updatedHoldings = target.data.holdings.filter(h => h.id !== assetId);
+      updated[portfolioIndex] = { ...target, data: recalculatePortfolio(updatedHoldings) };
+      return updated;
+    });
+  }, [handleStateUpdate]);
 
   return (
-    <div className="min-h-screen">
-      {activePortfolio ? (
-        <Dashboard
-          portfolio={activePortfolio}
-          portfolios={portfolios}
-          setActivePortfolioIndex={setActivePortfolioIndex}
-          updatePortfolio={updatePortfolio}
-          isMasked={isMasked}
-          setIsMasked={setIsMasked}
-        />
+    <div className="min-h-screen bg-gray-50 font-sans">
+      {!appState ? (
+        <FileUpload onDataLoaded={handleDataLoaded} />
       ) : (
-        <FileUpload onFileUpload={handleFileUpload} />
+        <Dashboard 
+          individualPortfolios={appState.individual} combinedPortfolio={appState.combined}
+          onReset={handleReset} onManualAdd={handleManualAdd} onUpdateAsset={handleUpdateAsset} onDeleteAsset={handleDeleteAsset}
+        />
       )}
     </div>
   );
-}
+};
 
-// --- アプリケーションのレンダリング ---
-const container = document.getElementById('root');
-const root = ReactDOM.createRoot(container);
-root.render(<App />);
+// --- アプリケーションの起動 (index.tsx) ---
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
     </script>
   </body>
 </html>
