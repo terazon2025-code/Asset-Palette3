@@ -277,29 +277,42 @@ const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewCha
     }
     return null;
   };
-  const renderCustomizedLabel = (props) => {
-      const { cx, cy, midAngle, outerRadius, name, value, percent } = props;
-      if (percent < 0.01) return null;
-      const isMobile = window.innerWidth < 640;
-      const RADIAN = Math.PI / 180;
-      const sin = Math.sin(-RADIAN * midAngle);
-      const cos = Math.cos(-RADIAN * midAngle);
-      const radius = outerRadius + (isMobile ? 15 : 35);
-      const x = cx + radius * cos;
-      const y = cy + radius * sin;
-      const ex = x + (cos >= 0 ? 1 : -1) * (isMobile ? 12 : 22);
-      const textAnchor = cos >= 0 ? 'start' : 'end';
-      return (
-          <g>
-              <path d={`M${cx + (outerRadius+5) * cos},${cy + (outerRadius+5) * sin}L${x},${y}L${ex},${y}`} stroke="#9ca3af" fill="none" strokeWidth={1} />
-              <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} textAnchor={textAnchor} fill="#1f2937" dominantBaseline="central" className="text-sm sm:text-2xl font-bold">{name}</text>
-              <text x={ex + (cos >= 0 ? 1 : -1) * 6} y={y} dy={isMobile ? 18 : 30} textAnchor={textAnchor} fill="#374151" className="text-xs sm:text-xl">
-                  {`${new Intl.NumberFormat('ja-JP').format(value)}円 `}
-                  <tspan fill="#16a34a" className="font-semibold">{`(${(percent * 100).toFixed(1)}%)`}</tspan>
-              </text>
-          </g>
-      );
-  };
+    const renderCustomizedLabel = (props) => {
+        const { cx, cy, midAngle, innerRadius, outerRadius, percent, name } = props;
+        if (percent < 0.04) return null;
+
+        const RADIAN = Math.PI / 180;
+        const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+        const x = cx + radius * Math.cos(-midAngle * RADIAN);
+        const y = cy + radius * Math.sin(-midAngle * RADIAN);
+        
+        const isMobile = window.innerWidth < 640;
+        const lineCharLimit = isMobile ? 5 : 7;
+        const percentageText = `${(percent * 100).toFixed(1)}%`;
+
+        if (name.length > lineCharLimit) {
+            const line1 = name.substring(0, lineCharLimit);
+            let line2 = name.substring(lineCharLimit);
+            if (line2.length > lineCharLimit) {
+                line2 = line2.substring(0, lineCharLimit - 1) + '…';
+            }
+
+            return (
+                <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" className="text-xs sm:text-base font-bold pointer-events-none select-none">
+                    <tspan x={x} dy="-1.2em">{line1}</tspan>
+                    <tspan x={x} dy="1.2em">{line2}</tspan>
+                    <tspan x={x} dy="1.2em" className="text-xs sm:text-sm font-semibold">{percentageText}</tspan>
+                </text>
+            );
+        }
+
+        return (
+            <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" className="text-xs sm:text-base font-bold pointer-events-none select-none">
+                <tspan x={x} dy="-0.5em">{name}</tspan>
+                <tspan x={x} dy="1.2em" className="text-xs sm:text-sm font-semibold">{percentageText}</tspan>
+            </text>
+        );
+    };
   const data = view === 'assetClass' ? byAssetClass : view === 'account' ? byAccount : byHolding;
   const total = data.reduce((sum, entry) => sum + entry.value, 0);
   const chartData = data.map(item => ({ ...item, total }));
@@ -321,9 +334,9 @@ const PortfolioPieChart = ({ byAccount, byAssetClass, byHolding, view, onViewCha
       </div>
       <div className="relative flex-grow w-full h-[28rem] sm:h-[42rem]">
         <ResponsiveContainer width="100%" height="100%">
-          <PieChart margin={{ top: 30, right: 20, bottom: 30, left: 20 }}>
+          <PieChart margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
             <Tooltip content={<CustomTooltip />} wrapperStyle={{ outline: 'none' }} offset={25} isAnimationActive={false} animationDuration={0} />
-            <Pie data={chartData} cx="50%" cy="50%" innerRadius={'65%'} outerRadius={'80%'} fill="#8884d8" paddingAngle={3} dataKey="value" nameKey="name" labelLine={false} label={renderCustomizedLabel}>
+            <Pie data={chartData} cx="50%" cy="50%" innerRadius={'60%'} outerRadius={'95%'} fill="#8884d8" paddingAngle={3} dataKey="value" nameKey="name" labelLine={false} label={renderCustomizedLabel}>
               {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={getColor(entry)} />)}
             </Pie>
           </PieChart>
